@@ -1,0 +1,248 @@
+name: Build ROCm Wheels
+
+on:
+  push:
+    branches:
+      - tridao
+  workflow_dispatch:
+    inputs:
+      docker_image:
+        description: 'Docker image (e.g., rocm/pytorch:rocm6.1.3_ubuntu22.04_py3.10_pytorch_release_2.3.0)'
+        required: false
+        default: ''
+      python_versions:
+        description: 'Python versions to build (comma-separated, e.g., 3.9,3.10,3.11). Leave empty to use all.'
+        required: false
+        default: ''
+  pull_request:
+    paths:
+      - '.github/workflows/build-rocm-wheels.yml'
+
+jobs:
+  # Determine if we're using a custom docker image
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      use_custom_image: ${{ steps.check.outputs.use_custom_image }}
+      docker_image: ${{ steps.check.outputs.docker_image }}
+      python_versions: ${{ steps.check.outputs.python_versions }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "${{ github.event.inputs.docker_image }}" ]; then
+            echo "use_custom_image=true" >> $GITHUB_OUTPUT
+            echo "docker_image=${{ github.event.inputs.docker_image }}" >> $GITHUB_OUTPUT
+            echo "python_versions=[\"custom\"]" >> $GITHUB_OUTPUT
+          else
+            echo "use_custom_image=false" >> $GITHUB_OUTPUT
+            echo "docker_image=" >> $GITHUB_OUTPUT
+            # Check if python_versions input is provided
+            if [ -n "${{ github.event.inputs.python_versions }}" ]; then
+              # Convert comma-separated to JSON array
+              VERSIONS=$(echo "${{ github.event.inputs.python_versions }}" | sed 's/,/","/g' | sed 's/^/["/' | sed 's/$/"]/')
+              echo "python_versions=$VERSIONS" >> $GITHUB_OUTPUT
+            else
+              echo "python_versions=[\"3.9\",\"3.10\",\"3.11\"]" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  build-wheels:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Define GPU architectures to build for
+        gpu_arch:
+          - name: "MI300-MI325"
+            archs: "gfx942"
+          - name: "MI355"
+            archs: "gfx950"
+          - name: "MI300-MI325-MI355"
+            archs: "gfx942;gfx950"
+          - name: "MI210-MI250"
+            archs: "gfx90a"
+          - name: "ALL"
+            archs: "gfx90a;gfx942;gfx950"
+        python_version: ${{ fromJson(needs.setup.outputs.python_versions) }}
+    
+    container:
+      image: ${{ needs.setup.outputs.use_custom_image == 'true' && needs.setup.outputs.docker_image || format('rocm/pytorch:rocm6.1.3_ubuntu22.04_py{0}_pytorch_release_2.3.0', matrix.python_version) }}
+      options: --device=/dev/kfd --device=/dev/dri --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
+    
+    env:
+      GPU_ARCHS: ${{ matrix.gpu_arch.archs }}
+      FLASH_ATTENTION_FORCE_BUILD: TRUE
+      BUILD_TARGET: rocm
+      PYTORCH_ROCM_ARCH: ${{ matrix.gpu_arch.archs }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Detect Python command
+        id: python
+        run: |
+          if [ "${{ matrix.python_version }}" = "custom" ]; then
+            # For custom docker images, detect available python
+            if command -v python3 &> /dev/null; then
+              echo "cmd=python3" >> $GITHUB_OUTPUT
+              PYVER=$(python3 --version | grep -oP '\d+\.\d+')
+              echo "version=$PYVER" >> $GITHUB_OUTPUT
+            elif command -v python &> /dev/null; then
+              echo "cmd=python" >> $GITHUB_OUTPUT
+              PYVER=$(python --version | grep -oP '\d+\.\d+')
+              echo "version=$PYVER" >> $GITHUB_OUTPUT
+            else
+              echo "Error: Python not found"
+              exit 1
+            fi
+          else
+            echo "cmd=python${{ matrix.python_version }}" >> $GITHUB_OUTPUT
+            echo "version=${{ matrix.python_version }}" >> $GITHUB_OUTPUT
+          fi
+          echo "Using Python command: $(cat $GITHUB_OUTPUT | grep '^cmd=')"
+      
+      - name: Set up Python
+        run: |
+          ${{ steps.python.outputs.cmd }} -m pip install --upgrade pip
+          ${{ steps.python.outputs.cmd }} -m pip install wheel setuptools build
+      
+      - name: Install dependencies
+        run: |
+          ${{ steps.python.outputs.cmd }} -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.1
+          ${{ steps.python.outputs.cmd }} -m pip install packaging psutil ninja einops
+      
+      - name: Build wheel
+        run: |
+          echo "Building for GPU architectures: $GPU_ARCHS"
+          echo "Using Python: ${{ steps.python.outputs.cmd }} (version ${{ steps.python.outputs.version }})"
+          ${{ steps.python.outputs.cmd }} setup.py bdist_wheel
+        env:
+          GPU_ARCHS: ${{ matrix.gpu_arch.archs }}
+      
+      - name: List built wheels
+        run: |
+          ls -lh dist/
+          
+      - name: Rename wheel with architecture info
+        run: |
+          cd dist
+          for wheel in *.whl; do
+            # Extract wheel name components
+            base_name="${wheel%.whl}"
+            # Add GPU arch info to the wheel name
+            arch_label=$(echo "${{ matrix.gpu_arch.archs }}" | tr ';' '_')
+            new_name="${base_name}_${arch_label}.whl"
+            mv "$wheel" "$new_name"
+            echo "Renamed $wheel to $new_name"
+          done
+          ls -lh
+      
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.gpu_arch.name }}-py${{ steps.python.outputs.version }}
+          path: dist/*.whl
+          retention-days: 30
+      
+      - name: Test wheel installation
+        run: |
+          cd /tmp
+          ${{ steps.python.outputs.cmd }} -m pip install $GITHUB_WORKSPACE/dist/*.whl
+          ${{ steps.python.outputs.cmd }} -c "import flash_attn; print(f'flash_attn version: {flash_attn.__version__}')"
+  
+  update-latest-release:
+    needs: [setup, build-wheels]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/tridao'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: all-wheels
+          pattern: wheel-*
+          merge-multiple: true
+      
+      - name: List all wheels
+        run: |
+          echo "All built wheels:"
+          ls -lh all-wheels/
+      
+      - name: Get commit info
+        id: commit_info
+        run: |
+          echo "sha_short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      
+      - name: Delete existing latest release
+        continue-on-error: true
+        run: |
+          gh release delete latest --yes --cleanup-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+      
+      - name: Create/Update Latest Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: "Latest ROCm Wheels (Build ${{ steps.commit_info.outputs.date }})"
+          body: |
+            ## Automated ROCm Wheel Build
+            
+            **Branch:** tridao
+            **Commit:** ${{ github.sha }}
+            **Built:** ${{ steps.commit_info.outputs.date }}
+            
+            ### Available Wheels
+            
+            This release contains Flash Attention wheels for multiple AMD GPU architectures:
+            
+            | Architecture | GPU Models | Wheel Pattern |
+            |--------------|------------|---------------|
+            | gfx942 | MI300, MI325 | `*gfx942*.whl` |
+            | gfx950 | MI355 | `*gfx950*.whl` |
+            | gfx90a | MI210, MI250 | `*gfx90a*.whl` |
+            | gfx942;gfx950 | MI300, MI325, MI355 | `*gfx942_gfx950*.whl` |
+            | All architectures | MI210, MI250, MI300, MI325, MI355 | `*gfx90a_gfx942_gfx950*.whl` |
+            
+            ### Installation
+            
+            Download the appropriate wheel for your GPU and Python version:
+            
+            ```bash
+            # Example: MI300/MI325 with Python 3.10
+            wget https://github.com/${{ github.repository }}/releases/download/latest/flash_attn-*gfx942*cp310*.whl
+            pip install flash_attn-*gfx942*cp310*.whl
+            ```
+            
+            ### Automation Download
+            
+            For automation, use stable URLs:
+            ```bash
+            # Get the latest wheel for a specific architecture and Python version
+            REPO="${{ github.repository }}"
+            ARCH="gfx942"
+            PYTHON="cp310"
+            
+            # Download using GitHub CLI
+            gh release download latest --repo $REPO --pattern "*${ARCH}*${PYTHON}*.whl"
+            
+            # Or using wget with GitHub API
+            WHEEL_URL=$(curl -s https://api.github.com/repos/$REPO/releases/tags/latest \
+              | jq -r ".assets[] | select(.name | contains(\"${ARCH}\") and contains(\"${PYTHON}\")) | .browser_download_url" \
+              | head -1)
+            wget $WHEEL_URL
+            ```
+          files: all-wheels/*.whl
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
