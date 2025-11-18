@@ -21,7 +21,7 @@ on:
 jobs:
   # Determine if we're using a custom docker image
   setup:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       use_custom_image: ${{ steps.check.outputs.use_custom_image }}
       docker_image: ${{ steps.check.outputs.docker_image }}
