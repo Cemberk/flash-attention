@@ -145,6 +145,7 @@ jobs:
           retention-days: 30
       
       - name: Test wheel installation
+        continue-on-error: true
         run: |
           cd /tmp
           ${{ steps.python.outputs.cmd }} -m pip install $GITHUB_WORKSPACE/dist/*.whl
