@@ -48,7 +48,7 @@ jobs:
 
   build-wheels:
     needs: setup
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     strategy:
       fail-fast: false
       matrix:
@@ -157,7 +157,7 @@ jobs:
   update-latest-release:
     needs: [setup, build-wheels]
     if: github.event_name == 'push' && github.ref == 'refs/heads/tridao'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: write
     
