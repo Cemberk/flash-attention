@@ -54,14 +54,6 @@ jobs:
       matrix:
         # Define GPU architectures to build for
         gpu_arch:
-          - name: "MI300-MI325"
-            archs: "gfx942"
-          - name: "MI355"
-            archs: "gfx950"
-          - name: "MI300-MI325-MI355"
-            archs: "gfx942;gfx950"
-          - name: "MI210-MI250"
-            archs: "gfx90a"
           - name: "ALL"
             archs: "gfx90a;gfx942;gfx950"
         python_version: ${{ fromJson(needs.setup.outputs.python_versions) }}
