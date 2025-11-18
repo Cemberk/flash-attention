@@ -153,7 +153,9 @@ jobs:
   
   update-latest-release:
     needs: [setup, build-wheels]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/tridao'
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/tridao') ||
+      (github.event_name == 'workflow_dispatch')
     runs-on: self-hosted
     permissions:
       contents: write
