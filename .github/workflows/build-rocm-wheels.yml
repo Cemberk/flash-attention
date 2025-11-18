@@ -19,7 +19,6 @@ on:
       - '.github/workflows/build-rocm-wheels.yml'
 
 jobs:
-  # Determine if we're using a custom docker image
   setup:
     runs-on: self-hosted
     outputs:
@@ -36,9 +35,7 @@ jobs:
           else
             echo "use_custom_image=false" >> $GITHUB_OUTPUT
             echo "docker_image=" >> $GITHUB_OUTPUT
-            # Check if python_versions input is provided
             if [ -n "${{ github.event.inputs.python_versions }}" ]; then
-              # Convert comma-separated to JSON array
               VERSIONS=$(echo "${{ github.event.inputs.python_versions }}" | sed 's/,/","/g' | sed 's/^/["/' | sed 's/$/"]/')
               echo "python_versions=$VERSIONS" >> $GITHUB_OUTPUT
             else
@@ -49,10 +46,11 @@ jobs:
   build-wheels:
     needs: setup
     runs-on: self-hosted
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        # Define GPU architectures to build for
         gpu_arch:
           - name: "ALL"
             archs: "gfx90a;gfx942;gfx950"
@@ -82,7 +80,6 @@ jobs:
         id: python
         run: |
           if [ "${{ matrix.python_version }}" = "custom" ]; then
-            # For custom docker images, detect available python
             if command -v python3 &> /dev/null; then
               echo "cmd=python3" >> $GITHUB_OUTPUT
               PYVER=$(python3 --version | grep -oP '\d+\.\d+')
@@ -127,9 +124,7 @@ jobs:
         run: |
           cd dist
           for wheel in *.whl; do
-            # Extract wheel name components
             base_name="${wheel%.whl}"
-            # Add GPU arch info to the wheel name
             arch_label=$(echo "${{ matrix.gpu_arch.archs }}" | tr ';' '_')
             new_name="${base_name}_${arch_label}.whl"
             mv "$wheel" "$new_name"
@@ -137,44 +132,12 @@ jobs:
           done
           ls -lh
       
-      - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheel-${{ matrix.gpu_arch.name }}-py${{ steps.python.outputs.version }}
-          path: dist/*.whl
-          retention-days: 30
-      
       - name: Test wheel installation
         continue-on-error: true
         run: |
           cd /tmp
           ${{ steps.python.outputs.cmd }} -m pip install $GITHUB_WORKSPACE/dist/*.whl
           ${{ steps.python.outputs.cmd }} -c "import flash_attn; print(f'flash_attn version: {flash_attn.__version__}')"
-  
-  update-latest-release:
-    needs: [setup, build-wheels]
-    runs-on: self-hosted
-    permissions:
-      contents: write
-    
-    steps:
-      - name: Download all wheels
-        uses: actions/download-artifact@v4
-        with:
-          path: all-wheels
-          pattern: wheel-*
-          merge-multiple: true
-      
-      - name: List all wheels
-        run: |
-          echo "All built wheels:"
-          ls -lh all-wheels/
-      
-      - name: Get commit info
-        id: commit_info
-        run: |
-          echo "sha_short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
-          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
       
       - name: Delete existing latest release
         continue-on-error: true
@@ -188,13 +151,13 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: latest
-          name: "Latest ROCm Wheels (Build ${{ steps.commit_info.outputs.date }})"
+          name: "Latest ROCm Wheels (Build $(date +'%Y-%m-%d'))"
           body: |
             ## Automated ROCm Wheel Build
             
             **Branch:** tridao
             **Commit:** ${{ github.sha }}
-            **Built:** ${{ steps.commit_info.outputs.date }}
+            **Built:** $(date +'%Y-%m-%d')
             
             ### Available Wheels
             
@@ -211,17 +174,14 @@ jobs:
             ### Installation
             
             Download the appropriate wheel for your GPU and Python version:
-            
-            ```bash
+            bash
             # Example: MI300/MI325 with Python 3.10
             wget https://github.com/${{ github.repository }}/releases/download/latest/flash_attn-*gfx942*cp310*.whl
             pip install flash_attn-*gfx942*cp310*.whl
-            ```
             
             ### Automation Download
             
             For automation, use stable URLs:
-            ```bash
             # Get the latest wheel for a specific architecture and Python version
             REPO="${{ github.repository }}"
             ARCH="gfx942"
@@ -235,10 +195,8 @@ jobs:
               | jq -r ".assets[] | select(.name | contains(\"${ARCH}\") and contains(\"${PYTHON}\")) | .browser_download_url" \
               | head -1)
             wget $WHEEL_URL
-            ```
-          files: all-wheels/*.whl
+          files: dist/*.whl
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
