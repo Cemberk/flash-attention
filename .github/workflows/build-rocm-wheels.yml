@@ -121,6 +121,7 @@ jobs:
           ls -lh dist/
           
       - name: Rename wheel with architecture info
+        shell: bash
         run: |
           cd dist
           for wheel in *.whl; do
