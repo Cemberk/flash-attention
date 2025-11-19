@@ -137,7 +137,7 @@ jobs:
               platform="${BASH_REMATCH[5]}"
               
               # Insert arch_label as build tag after version
-              new_name="${name}-${version}-${arch_label}-${python}-${abi}-${platform}.whl"
+              new_name="${name}-${version}-${python}-${abi}-${platform}_${arch_label}.whl"
               mv "$wheel" "$new_name"
               echo "Renamed $wheel to $new_name"
             else
