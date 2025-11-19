@@ -112,6 +112,9 @@ jobs:
         run: |
           echo "Building for GPU architectures: $GPU_ARCHS"
           echo "Using Python: ${{ steps.python.outputs.cmd }} (version ${{ steps.python.outputs.version }})"
+          # Set local version to include GPU architectures (e.g., 2.8.3+gfx90a.gfx942.gfx950)
+          export FLASH_ATTN_LOCAL_VERSION=$(echo "$GPU_ARCHS" | tr ';' '.')
+          echo "FLASH_ATTN_LOCAL_VERSION: $FLASH_ATTN_LOCAL_VERSION"
           ${{ steps.python.outputs.cmd }} setup.py bdist_wheel
         env:
           GPU_ARCHS: ${{ matrix.gpu_arch.archs }}
@@ -120,32 +123,6 @@ jobs:
         run: |
           ls -lh dist/
           
-      - name: Rename wheel with architecture info
-        shell: bash
-        run: |
-          cd dist
-          for wheel in *.whl; do
-            # Wheel format: {name}-{version}-{python}-{abi}-{platform}.whl
-            # We'll add GPU arch as a build tag: {name}-{version}-{buildtag}-{python}-{abi}-{platform}.whl
-            arch_label=$(echo "${{ matrix.gpu_arch.archs }}" | tr ';' '_')
-            # Parse wheel name using regex
-            if [[ $wheel =~ ^(.+)-([0-9].+)-(.+)-(.+)-(.+)\.whl$ ]]; then
-              name="${BASH_REMATCH[1]}"
-              version="${BASH_REMATCH[2]}"
-              python="${BASH_REMATCH[3]}"
-              abi="${BASH_REMATCH[4]}"
-              platform="${BASH_REMATCH[5]}"
-              
-              # Insert arch_label as build tag after version
-              new_name="${name}-${version}-${python}-${abi}-${platform}_${arch_label}.whl"
-              mv "$wheel" "$new_name"
-              echo "Renamed $wheel to $new_name"
-            else
-              echo "Warning: Could not parse wheel name: $wheel"
-            fi
-          done
-          ls -lh
-      
       - name: Test wheel installation
         continue-on-error: true
         run: |
