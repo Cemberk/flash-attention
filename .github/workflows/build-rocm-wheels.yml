@@ -124,11 +124,24 @@ jobs:
         run: |
           cd dist
           for wheel in *.whl; do
-            base_name="${wheel%.whl}"
+            # Wheel format: {name}-{version}-{python}-{abi}-{platform}.whl
+            # We'll add GPU arch as a build tag: {name}-{version}-{buildtag}-{python}-{abi}-{platform}.whl
             arch_label=$(echo "${{ matrix.gpu_arch.archs }}" | tr ';' '_')
-            new_name="${base_name}_${arch_label}.whl"
-            mv "$wheel" "$new_name"
-            echo "Renamed $wheel to $new_name"
+            # Parse wheel name using regex
+            if [[ $wheel =~ ^(.+)-([0-9].+)-(.+)-(.+)-(.+)\.whl$ ]]; then
+              name="${BASH_REMATCH[1]}"
+              version="${BASH_REMATCH[2]}"
+              python="${BASH_REMATCH[3]}"
+              abi="${BASH_REMATCH[4]}"
+              platform="${BASH_REMATCH[5]}"
+              
+              # Insert arch_label as build tag after version
+              new_name="${name}-${version}-${arch_label}-${python}-${abi}-${platform}.whl"
+              mv "$wheel" "$new_name"
+              echo "Renamed $wheel to $new_name"
+            else
+              echo "Warning: Could not parse wheel name: $wheel"
+            fi
           done
           ls -lh
       
